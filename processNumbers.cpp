@@ -16,12 +16,13 @@ using namespace std;
 
 
 //defaults
-const int THREADCOUNT = 20;
+const int THREADCOUNT = 10;
 const int BUCKETSIZE = 1000;
-const int NUMBUCKETS = 20;
+const int NUMBUCKETS = 10;
 
 int g_bucketSize = BUCKETSIZE;
 int g_threadCount = THREADCOUNT;
+int g_threadMethod = 0;
 
 list<int> g_ReadQ;
 list<int> g_ProcQ;
@@ -43,6 +44,8 @@ typedef map<int, long>::iterator subItr;
 
 _tdataStruct g_DS;
 
+
+map<int, long> g_mResults;
 
 void storeRecord(string& s)
 {
@@ -176,26 +179,72 @@ void readNumberProc()
 		}
 
 		lock_guard<std::mutex> l(_mtxPrint);
-		cout << "End of file ..........." << endl;
+		//cout << "End of file ..........." << endl;
 
     	myfile.close();
   	}
 }
 
+void countProc(int in)
+{
+	long count = getCount(in);
+	g_mResults[in] = count;
+	lock_guard<std::mutex> l(_mtxPrint);
+	cout << " Value : " << in << " Count : "<< count << endl;
+
+}
+
 void emptyBucket(int index)
 {
+	std::thread th[g_threadCount];
+	int c(0);
+
 	for(auto i = g_listInput[index].begin(); i != g_listInput[index].end(); i++)
 	{
-		lock_guard<std::mutex> ld(_mtxData);
-		g_total++;
-		long count = getCount(*i);
-		lock_guard<std::mutex> l(_mtxPrint);
-		cout << "Bucket : " << index << " Value : " << *i << " Count : "<< count << endl;
+		if(g_mResults[*i] != -1)
+		{
+			lock_guard<std::mutex> l(_mtxPrint);
+			cout << " Value : " << *i << " Count : "<< g_mResults[*i] << endl;
+			continue;
+		}
+
+		if(g_threadMethod == 0)
+		{
+			long count = getCount(*i);
+			lock_guard<std::mutex> l(_mtxPrint);
+			g_mResults[*i] = count;
+			cout << " Value : " << *i << " Count : "<< count << endl;
+		}
+		else
+		{
+			th[c++] = std::thread(countProc, *i);
+
+			if(c == g_threadCount)
+			{
+				for(int id = 0; id < c; id++)
+				{
+					if(th[id].joinable())
+					{
+						th[id].join();
+					}
+				}
+
+				c = 0;
+			}
+		}
 	}
+
+	for(int id = 0; id < c; id++)
+	{
+		if(th[id].joinable())
+		{
+			th[id].join();
+		}
+	}
+
 
 	//add the index to the read list.
 	lock_guard<std::mutex> lock(_mtxRead);
-	g_listInput[index].clear();
 	g_ReadQ.push_back(index);
 	index = -1;
 }
@@ -262,19 +311,33 @@ void cleanup()
  
 int main(int argc, char* argv[])  
 {
+
+	//
+	//
+	for(int i = 0; i < 1001; i++)
+	{
+		g_mResults[i] = -1;
+	}
   
    	g_threadCount = THREADCOUNT;
 	g_bucketSize = BUCKETSIZE;
 
 	if (argc == 2)
 	{
-		g_bucketSize = atoi(argv[1]);
+		g_threadMethod = atoi(argv[1]);
 	}
 
 	if (argc == 3)
 	{
-		g_bucketSize = atoi(argv[1]);
+		g_threadMethod = atoi(argv[1]);
 		g_threadCount =  atoi(argv[2]);
+	}
+
+	if(argc == 4)
+	{
+		g_threadMethod = atoi(argv[1]);
+        g_threadCount =  atoi(argv[2]);
+		g_bucketSize = atoi(argv[3]);
 	}
 
 	loadRecords();
@@ -287,6 +350,5 @@ int main(int argc, char* argv[])
 
 	cleanup();
 
-    std::cout<<"Exit of Main function : "<< g_total << std::endl;
     return 0;
 }
