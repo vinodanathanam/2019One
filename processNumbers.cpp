@@ -7,28 +7,28 @@
 #include <mutex> 
 #include <condition_variable>
 #include <chrono>
-
+#include <map>
+#include <numeric>
+#include <functional>
+#include <boost/algorithm/string.hpp>
 
 using namespace std;
 
 
 //defaults
-const int THREADCOUNT = 10;
+const int THREADCOUNT = 20;
 const int BUCKETSIZE = 1000;
-const int NUMBUCKETS = 10;
+const int NUMBUCKETS = 20;
 
 int g_bucketSize = BUCKETSIZE;
 int g_threadCount = THREADCOUNT;
-int g_numBuckets = NUMBUCKETS;
 
 list<int> g_ReadQ;
 list<int> g_ProcQ;
 vector<int> g_listInput[NUMBUCKETS];
-bool g_bfileEOF = false;
 
 
 std::mutex _mtxPrint;
-
 std::mutex _mtxRead;
 std::mutex _mtxProcess;
 std::condition_variable _cv;
@@ -37,11 +37,89 @@ std::mutex _mtxData;
 long g_total = 0;
 
 
+typedef map<int, map<int, long> > _tdataStruct;
+typedef map<int, map<int, long> >::iterator mainItr;
+typedef map<int, long>::iterator subItr;
+
+_tdataStruct g_DS;
+
+
+void storeRecord(string& s)
+{
+	std::vector<std::string> results;
+	boost::algorithm::split(results, s, boost::is_any_of(" ,\n"));
+
+	if(results.size() != 2)
+		return;
+
+	int key = atoi(results[0].c_str());
+	int val = atoi(results[1].c_str());
+	mainItr itr = g_DS.find(key);
+
+	if (itr != g_DS.end())
+	{
+		subItr it = itr->second.find(val);
+		if (it != itr->second.end())
+		{
+			it->second = it->second + 1;
+		}
+		else
+		{
+			itr->second.insert(make_pair(val, 1));
+		}
+	}
+	else
+	{
+		map<int, long> temp;
+		temp.insert(make_pair(val, 1));
+		g_DS.insert(make_pair(key, temp));
+	}
+
+}
+
+void loadRecords()
+{
+	ifstream ifile("extents.txt");
+	if(ifile.is_open())
+	{
+		string line;
+		while( getline( ifile, line))
+		{
+			storeRecord(line);
+		}
+
+		ifile.close();
+	}	
+}
+
+long countall(int val, const std::pair<int, long>& x)
+{
+	return val + x.second;
+}
+
+long getCount(const int& num)
+{
+	long count(0);
+
+	for (mainItr itr = g_DS.begin(); itr != g_DS.end() && itr->first <= num; itr++) //check if the start is less than num
+	{
+		if (num <= itr->second.rbegin()->first) // check if the end is > num
+		{
+			subItr it = itr->second.lower_bound(num); //start from the num
+			if (it != itr->second.end())
+			{
+				count = accumulate(it, itr->second.end(), count, countall);
+			}
+		}
+	}
+	return count;
+}
+
 void readNumberProc()
 {
 
 	//load lookup numbers
-	for (int j = 0; j < g_numBuckets ; j++)
+	for (int j = 0; j < NUMBUCKETS; j++)
 		g_ReadQ.push_back(j);
 
 	ifstream myfile ("numbers.txt");
@@ -110,8 +188,9 @@ void emptyBucket(int index)
 	{
 		lock_guard<std::mutex> ld(_mtxData);
 		g_total++;
-		//lock_guard<std::mutex> l(_mtxPrint);
-		//cout << "Bucket : " << index << " Value : " << *i << endl;
+		long count = getCount(*i);
+		lock_guard<std::mutex> l(_mtxPrint);
+		cout << "Bucket : " << index << " Value : " << *i << " Count : "<< count << endl;
 	}
 
 	//add the index to the read list.
@@ -143,9 +222,7 @@ void ProcessNumbers()
 		
 		threads[count++] = std::thread(emptyBucket, item);
 
-		//std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-		if(count == 10)
+		if(count == g_threadCount)
 		{
 			for(int id = 0; id < count; id++)
 			{
@@ -156,7 +233,6 @@ void ProcessNumbers()
 			}
 			
 			count = 0;	
-			//cout << "Cleared....................." << endl;
 		}
 		
 	}
@@ -172,6 +248,17 @@ void ProcessNumbers()
 
 }
 
+void cleanup()
+{
+	if (!g_DS.empty())
+	{
+		for (mainItr it = g_DS.begin(); it != g_DS.end(); it++)
+		{
+			it->second.clear();
+		}
+		g_DS.clear();
+	}
+}
  
 int main(int argc, char* argv[])  
 {
@@ -187,14 +274,19 @@ int main(int argc, char* argv[])
 	if (argc == 3)
 	{
 		g_bucketSize = atoi(argv[1]);
-		g_numBuckets = g_threadCount =  atoi(argv[2]);
+		g_threadCount =  atoi(argv[2]);
 	}
+
+	loadRecords();
 
 	std::thread threadObj(readNumberProc);
 
 	ProcessNumbers();
 
-	threadObj.join();    
+	threadObj.join();
+
+	cleanup();
+
     std::cout<<"Exit of Main function : "<< g_total << std::endl;
     return 0;
 }
